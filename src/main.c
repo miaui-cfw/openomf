@@ -21,6 +21,9 @@
 
 #if defined(USE_ARGTABLE)
 #include <argtable3.h>
+#ifdef RG35XX
+#include "video/renderers/rg35xx/rg35xx_renderer.h"
+#endif
 #endif
 
 #ifndef SHA1_HASH
@@ -88,8 +91,17 @@ int main(int argc, char *argv[]) {
     struct arg_int *speed = arg_int0(NULL, "speed", "<speed>", "game speed to use: 1-10");
     struct arg_str *log_level = arg_str0(NULL, "log-level", "<level>", "Log level (DEBUG, INFO, WARN, ERROR)");
     struct arg_end *end = arg_end(30);
+#ifdef RG35XX
+    struct arg_lit *lock =
+        arg_lit0(NULL, "lock", "speeds 8 and 4: a fight tick is exactly one / two panel refreshes (smooth, ~3% slower)");
+    struct arg_lit *stats = arg_lit0(NULL, "stats", "log frame statistics every ten seconds");
+    void *argtable[] = {help,  vers, listen, lobby, lobbyarg, connect, force_audio_backend, force_renderer,
+                        trace, port, play,   rec,   warp,     speed,   log_level,           lock,
+                        stats, end};
+#else
     void *argtable[] = {help,  vers, listen, lobby, lobbyarg, connect, force_audio_backend, force_renderer,
                         trace, port, play,   rec,   warp,     speed,   log_level,           end};
+#endif
     const char *progname = "openomf";
 
     // Make sure everything got allocated
@@ -172,6 +184,10 @@ int main(int argc, char *argv[]) {
     if(trace->count > 0) {
         trace_file = omf_strdup(trace->sval[0]);
     }
+#ifdef RG35XX
+    engine_vblank_lock = lock->count > 0;
+    rg35xx_renderer_stats = stats->count > 0;
+#endif
 #endif // defined(USE_ARGTABLE)
 
     // Init log
@@ -185,6 +201,9 @@ int main(int argc, char *argv[]) {
     log_add_stderr(LOG_DEBUG, true);
     log_set_level(LOG_DEBUG);
 #else
+#ifdef RG35XX // the messages on stderr (there is no log file)
+    log_add_stderr(LOG_INFO, false);
+#endif
     log_set_level(LOG_INFO); // In release mode, drop debugs.
 #endif
 
@@ -205,8 +224,10 @@ int main(int argc, char *argv[]) {
     resource_path_create_dirs();
 
     // Initialize logfile writing now that we have the directories.
+#ifndef RG35XX // no log file on the SD card: stderr only
     const path log_filename = get_log_filename();
     log_add_file(path_c(&log_filename), LOG_INFO);
+#endif
 
     // Simple header
     log_info("Starting OpenOMF v%s", get_version_string());

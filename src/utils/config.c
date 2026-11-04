@@ -222,10 +222,92 @@ void conf_addstring(char *name, char *default_val) {
     opt->value.value_string = omf_strdup(default_val ? default_val : "");
 }
 
+#ifdef RG35XX
+/*
+ * RG35XX: the stub keeps its options on disk without libconfuse, in libconfuse's own syntax (name = value, strings
+ * quoted), one option a line. Unknown names and malformed lines are skipped; options missing from the file keep
+ * their defaults. The file is written only when its text changes (the SD card is spared), through a temporary file
+ * renamed over it.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+static stub_opt *stub_find(const char *name) {
+    conf_ensure_opt_init();
+    iterator it;
+    vector_iter_begin(&cfg_stub_opts, &it);
+    stub_opt *opt;
+    foreach(it, opt) {
+        if(strcmp(name, opt->name) == 0)
+            return opt;
+    }
+    return NULL;
+}
+
+static void stub_parse_line(char *line) {
+    char *eq = strchr(line, '=');
+    if(eq == NULL)
+        return;
+    char *name = line, *value = eq + 1;
+    *eq = '\0';
+    while(*name == ' ' || *name == '\t')
+        name++;
+    for(char *e = eq - 1; e >= name && (*e == ' ' || *e == '\t'); e--)
+        *e = '\0';
+    while(*value == ' ' || *value == '\t')
+        value++;
+    size_t n = strlen(value);
+    while(n > 0 && (value[n - 1] == '\n' || value[n - 1] == '\r' || value[n - 1] == ' '))
+        value[--n] = '\0';
+
+    stub_opt *opt = stub_find(name);
+    if(opt == NULL)
+        return;
+    switch(opt->variant) {
+        case STUB_OPT_INT:
+            opt->value.value_int = (int)strtol(value, NULL, 0);
+            break;
+        case STUB_OPT_BOOL:
+            opt->value.value_bool = strcmp(value, "true") == 0 || strcmp(value, "1") == 0;
+            break;
+        case STUB_OPT_FLOAT:
+            opt->value.value_float = strtod(value, NULL);
+            break;
+        case STUB_OPT_STRING: {
+            // "..." with \" and \\ escaped
+            if(*value != '"')
+                break;
+            char *out = value, *in = value + 1;
+            while(*in && *in != '"') {
+                if(*in == '\\' && in[1])
+                    in++;
+                *out++ = *in++;
+            }
+            *out = '\0';
+            omf_free(opt->value.value_string);
+            opt->value.value_string = omf_strdup(value);
+            break;
+        }
+    }
+}
+
+int conf_init(const char *filename) {
+    FILE *f = fopen(filename, "r");
+    if(f == NULL)
+        return 0; // no file yet: the defaults
+    char line[1024];
+    while(fgets(line, sizeof line, f) != NULL)
+        stub_parse_line(line);
+    fclose(f);
+    return 0;
+}
+#else
 int conf_init(const char *filename) {
     (void)filename; // unused
     return 0;
 }
+#endif
 
 void conf_close(void) {
     if(cfg_opts_init) {
@@ -242,10 +324,82 @@ void conf_close(void) {
     }
 }
 
+#ifdef RG35XX
+int conf_write_config(const char *filename) {
+    conf_ensure_opt_init();
+    char *text = NULL;
+    size_t size = 0;
+    FILE *m = open_memstream(&text, &size);
+    if(m == NULL)
+        return 1;
+    iterator it;
+    vector_iter_begin(&cfg_stub_opts, &it);
+    stub_opt *opt;
+    foreach(it, opt) {
+        switch(opt->variant) {
+            case STUB_OPT_INT:
+                fprintf(m, "%s = %d\n", opt->name, opt->value.value_int);
+                break;
+            case STUB_OPT_BOOL:
+                fprintf(m, "%s = %s\n", opt->name, opt->value.value_bool ? "true" : "false");
+                break;
+            case STUB_OPT_FLOAT:
+                fprintf(m, "%s = %.6f\n", opt->name, opt->value.value_float);
+                break;
+            case STUB_OPT_STRING:
+                fprintf(m, "%s = \"", opt->name);
+                for(const char *c = opt->value.value_string; *c; c++) {
+                    if(*c == '"' || *c == '\\')
+                        fputc('\\', m);
+                    fputc(*c, m);
+                }
+                fputs("\"\n", m);
+                break;
+        }
+    }
+    fclose(m);
+
+    // unchanged: not written
+    int result = 0;
+    FILE *old = fopen(filename, "r");
+    if(old != NULL) {
+        char *prev = omf_malloc(size + 1);
+        const size_t got = fread(prev, 1, size + 1, old);
+        fclose(old);
+        const int same = got == size && memcmp(prev, text, size) == 0;
+        omf_free(prev);
+        if(same) {
+            free(text);
+            return 0;
+        }
+    }
+
+    const size_t tmp_len = strlen(filename) + 5;
+    char *tmp = omf_malloc(tmp_len);
+    snprintf(tmp, tmp_len, "%s.new", filename);
+    FILE *f = fopen(tmp, "w");
+    if(f == NULL || fwrite(text, 1, size, f) != size || fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        result = 1;
+    }
+    if(f != NULL && fclose(f) != 0) {
+        result = 1;
+    }
+    if(result == 0 && rename(tmp, filename) != 0) {
+        result = 1;
+    }
+    if(result != 0) {
+        remove(tmp);
+    }
+    omf_free(tmp);
+    free(text);
+    return result;
+}
+#else
 int conf_write_config(const char *filename) {
     (void)filename; // unused
     return 0;
 }
+#endif
 
 int conf_int(const char *name) {
     stub_opt *opt = stub_get(name, STUB_OPT_INT);

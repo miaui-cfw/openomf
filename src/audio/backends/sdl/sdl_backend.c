@@ -17,8 +17,13 @@ static_assert(SDL_MIXER_VERSION_ATLEAST(2, 0, 4), "SDL_mixer version should be 2
 static const audio_sample_rate supported_sample_rates[] = {
     {11025, 0, "11025Hz"},
     {22050, 0, "22050Hz"},
+#ifdef RG35XX // the device's own rate first: nothing resampled
+    {44100, 1, "44100Hz"},
+    {48000, 0, "48000Hz"},
+#else
     {44100, 0, "44100Hz"},
     {48000, 1, "48000Hz"},
+#endif
 };
 static const int supported_sample_rate_count = N_ELEMENTS(supported_sample_rates);
 
@@ -91,8 +96,52 @@ static inline void free_chunk(sdl_audio_context *ctx, const int i) {
     }
 }
 
+#ifdef RG35XX
+/*
+ * RG35XX: SDL's converter resamples with a long windowed-sinc filter, about 12 ms for one of the game's effects on
+ * the Cortex-A9, on the main thread at the moment the sound starts: a dropped frame for each hit. The effects are
+ * 8-bit mono at a few kHz (the DOS game played them unfiltered); a linear interpolation to the output rate, in the
+ * output's 16-bit format and channels, costs a fraction of a millisecond.
+ */
+static bool fast_chunk(const sdl_audio_context *ctx, Mix_Chunk *chunk, const char *src_buf, const size_t src_len,
+                       const int src_freq, const int volume) {
+    if(ctx->format != AUDIO_S16SYS || src_len == 0 || src_freq <= 0 || ctx->sample_rate <= 0) {
+        return false;
+    }
+    const int channels = ctx->channels;
+    const size_t frames = (size_t)((uint64_t)src_len * (uint64_t)ctx->sample_rate / (uint64_t)src_freq);
+    Sint16 *out = SDL_malloc(frames * channels * sizeof(Sint16) + 2);
+    if(out == NULL) {
+        return false;
+    }
+    const Uint8 *in = (const Uint8 *)src_buf;
+    const uint64_t step = ((uint64_t)src_freq << 16) / (uint64_t)ctx->sample_rate; // source samples a frame, 16.16
+    uint64_t pos = 0;
+    for(size_t i = 0; i < frames; i++, pos += step) {
+        const size_t k = (size_t)(pos >> 16);
+        const int frac = (int)(pos & 0xFFFF);
+        const int a = (int)in[k] - 128;
+        const int b = (k + 1 < src_len ? (int)in[k + 1] : (int)in[k]) - 128;
+        const Sint16 v = (Sint16)(a * 256 + (((b - a) * frac) >> 8)); // U8 to S16 as SDL does it: (x - 128) * 256
+        for(int c = 0; c < channels; c++) {
+            out[i * channels + c] = v;
+        }
+    }
+    chunk->volume = volume;
+    chunk->abuf = (Uint8 *)out;
+    chunk->alen = (Uint32)(frames * channels * sizeof(Sint16));
+    chunk->allocated = 1;
+    return true;
+}
+#endif
+
 static bool audio_get_chunk(const sdl_audio_context *ctx, Mix_Chunk *chunk, const char *src_buf, const size_t src_len,
                             const int src_freq, const int volume) {
+#ifdef RG35XX
+    if(fast_chunk(ctx, chunk, src_buf, src_len, src_freq, volume)) {
+        return true;
+    }
+#endif
     SDL_AudioCVT cvt;
 
     if(SDL_BuildAudioCVT(&cvt, AUDIO_U8, 1, src_freq, ctx->format, ctx->channels, ctx->sample_rate) < 0) {
@@ -167,6 +216,9 @@ static bool play_pcm_sound(void *userdata, const int channel, const sound_source
     const int pan_left = (panning > 0) ? (100 - panning) * 255 / 100 : 255;
     const int pan_right = (panning < 0) ? (100 + panning) * 255 / 100 : 255;
 
+#ifdef RG35XX
+    Mix_HaltChannel(channel); // the mixer must be done with the old chunk before it is freed
+#endif
     free_chunk(ctx, channel); // Drop any previous chunk on this channel.
     if(!audio_get_chunk(ctx, &ctx->chunks[channel], src->buf, src->len, src->freq, volume)) {
         log_error("Unable to play sound: Failed to load chunk");
@@ -256,13 +308,22 @@ static bool setup_backend_context(void *userdata, const unsigned sample_rate, co
         goto error_1;
     }
 
+#ifdef RG35XX
+    // The RG35XX's ALSA driver takes mono but plays it at twice the rate: always stereo. And a shorter buffer than
+    // upstream's 2048 frames: a hit is heard sooner.
+    const int channels = 2;
+    const int buffer_frames = 1024;
+#else
+    const int channels = mono ? 1 : 2;
+    const int buffer_frames = 2048;
+#endif
     log_info("Requested audio device with options:");
     log_info(" * Sample rate: %uHz", sample_rate);
-    log_info(" * Channels: %d", mono ? 1 : 2);
+    log_info(" * Channels: %d", channels);
     log_info(" * Format: %s", get_sdl_audio_format_string(AUDIO_S16SYS));
 
     // Request a device -- the actual configuration we get back may differ.
-    if(Mix_OpenAudioDevice(sample_rate, AUDIO_S16SYS, mono ? 1 : 2, 2048, NULL, 0) != 0) {
+    if(Mix_OpenAudioDevice(sample_rate, AUDIO_S16SYS, channels, buffer_frames, NULL, 0) != 0) {
         log_error("Unable to initialize audio device: %s", SDL_GetError());
         goto error_2;
     }

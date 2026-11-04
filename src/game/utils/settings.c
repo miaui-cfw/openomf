@@ -85,7 +85,11 @@ const field f_sound[] = {
     F_BOOL(settings_sound, music_mono, 0),
     F_INT(settings_sound, sound_vol, 5),
     F_INT(settings_sound, music_vol, 5),
+#ifdef RG35XX
+    F_INT(settings_sound, sample_rate, 44100),
+#else
     F_INT(settings_sound, sample_rate, 48000),
+#endif
     F_INT(settings_sound, music_resampler, 1),
     F_STRING(settings_sound, player, ""),
     F_INT(settings_sound, music_type, 0),
@@ -118,9 +122,15 @@ const field f_advanced[] = {
 
 const field f_keyboard[] = {
     // Player one
+#ifdef RG35XX // player one is the device's own pad
+    F_INT(settings_keyboard, ctrl_type1, CTRL_TYPE_GAMEPAD),
+    F_STRING(settings_keyboard, joy_name1, "RG35XX Gamepad"),
+    F_INT(settings_keyboard, joy_offset1, 0),
+#else
     F_INT(settings_keyboard, ctrl_type1, CTRL_TYPE_KEYBOARD),
     F_STRING(settings_keyboard, joy_name1, "None"),
     F_INT(settings_keyboard, joy_offset1, -1),
+#endif
     F_STRING(settings_keyboard, key1_jump_up, "Up"),
     F_STRING(settings_keyboard, key1_jump_right, "PageUp"),
     F_STRING(settings_keyboard, key1_walk_right, "Right"),

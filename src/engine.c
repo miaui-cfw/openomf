@@ -22,8 +22,36 @@
 #include "video/video.h"
 #include <SDL.h>
 #include <stdio.h>
+#include <string.h>
 
 #define MAX_TICKS_PER_FRAME 10
+
+#ifdef RG35XX
+#include "resources/ids.h"
+#include "video/renderers/rg35xx/rg35xx_renderer.h"
+
+/*
+ * --lock: at the two fight speeds whose tick is all but a whole number of the 60 Hz panel's refreshes (speed 8:
+ * 16 ms, one refresh; speed 4: 32 ms, two), fight ticks are counted in presented frames, not milliseconds: every
+ * tick shown for exactly one or two refreshes (the loop runs once a refresh: the swap waits for the vblank), about
+ * 3% slower than the nominal speed. Other speeds, and everything outside fights, keep the wall clock.
+ */
+bool engine_vblank_lock = false;
+
+static int vblanks_per_dyntick(game_state *gs) {
+    if(!engine_vblank_lock || gs->warp_speed) {
+        return 0;
+    }
+    switch(game_state_ms_per_dyntick(gs)) {
+        case 16:
+            return 1;
+        case 32:
+            return 2;
+        default:
+            return 0; // also the 10 ms static tick outside fights
+    }
+}
+#endif
 #define TICK_EXPIRY_MS 100
 
 static int run = 0;
@@ -193,6 +221,9 @@ void engine_run(const engine_init_flags *init_flags) {
     uint64_t frame_start = SDL_GetTicks64(); // Set game tick timer
     int dynamic_wait = 0;
     int static_wait = 0;
+#ifdef RG35XX
+    int lock_frames = 0;
+#endif
     while(run && game_state_is_running(gs)) {
         // Handle events
         bool check_fs;
@@ -330,6 +361,18 @@ void engine_run(const engine_init_flags *init_flags) {
         if(!visual_debugger) {
             dynamic_wait += frame_dt;
             static_wait += frame_dt;
+#ifdef RG35XX
+            const int vblanks = vblanks_per_dyntick(gs);
+            if(vblanks > 0) {
+                // exactly one fight tick every `vblanks` frames
+                if(++lock_frames >= vblanks) {
+                    lock_frames = 0;
+                    dynamic_wait = game_state_ms_per_dyntick(gs) + 1;
+                } else {
+                    dynamic_wait = 0;
+                }
+            }
+#endif
         } else {
             console_tick(gs);
         }
@@ -342,6 +385,12 @@ void engine_run(const engine_init_flags *init_flags) {
         bool has_dynamic = true;
         bool has_static = true;
         int tick_limit = MAX_TICKS_PER_FRAME;
+#ifdef RG35XX
+        // --stats: a frame whose ticks take long is logged, with what they did
+        const uint64_t ticks_start = SDL_GetPerformanceCounter();
+        int n_dynamic = 0, n_static = 0, n_delay = 0;
+        uint64_t t_dynamic = 0, t_static = 0, t_palette = 0, t0;
+#endif
         do {
             int dyntick_ms = game_state_ms_per_dyntick(gs);
             if(debugger_proceed > 0) {
@@ -354,7 +403,14 @@ void engine_run(const engine_init_flags *init_flags) {
             // that are not dependent on game speed (such as menus).
             has_static = static_wait > STATIC_TICKS;
             if(has_static) {
+#ifdef RG35XX
+                n_static++;
+                t0 = SDL_GetPerformanceCounter();
+#endif
                 game_state_static_tick(gs, false);
+#ifdef RG35XX
+                t_static += SDL_GetPerformanceCounter() - t0;
+#endif
                 // check if we need to replace the game state
                 if(gs->new_state) {
                     // one of the controllers wants to replace the game state
@@ -375,7 +431,15 @@ void engine_run(const engine_init_flags *init_flags) {
             // with the actual gameplay stuff.
             has_dynamic = dynamic_wait > dyntick_ms;
             if(has_dynamic) {
+#ifdef RG35XX
+                n_dynamic++;
+                n_delay += gs->delay > 0;
+                t0 = SDL_GetPerformanceCounter();
+#endif
                 game_state_dynamic_tick(gs, false);
+#ifdef RG35XX
+                t_dynamic += SDL_GetPerformanceCounter() - t0;
+#endif
                 dynamic_wait -= dyntick_ms;
                 if(gs->delay > 0) {
                     log_debug("applying delay %d", gs->delay);
@@ -387,10 +451,40 @@ void engine_run(const engine_init_flags *init_flags) {
 
             // Ensure any pending palette changes are handled after any ticks are made.
             if(has_dynamic || has_static) {
+#ifdef RG35XX
+                t0 = SDL_GetPerformanceCounter();
+#endif
                 game_state_palette_transform(gs);
                 vga_state_render();
+#ifdef RG35XX
+                t_palette += SDL_GetPerformanceCounter() - t0;
+#endif
             }
         } while(tick_limit-- && (has_dynamic || has_static));
+#ifdef RG35XX
+        if(rg35xx_renderer_stats && is_arena(gs->this_id)) {
+            // in fights: how many fight ticks each frame ran (even pacing: always the same count)
+            static long hist[4], frames;
+            hist[min2(n_dynamic, 3)]++;
+            if(++frames == 600) {
+                log_info("stats: fight ticks a frame over 600 frames: 0: %ld, 1: %ld, 2: %ld, 3+: %ld (tick %d ms%s)",
+                         hist[0], hist[1], hist[2], hist[3], game_state_ms_per_dyntick(gs),
+                         vblanks_per_dyntick(gs) ? ", locked" : "");
+                memset(hist, 0, sizeof hist);
+                frames = 0;
+            }
+        }
+        if(rg35xx_renderer_stats) {
+            const double ms = (SDL_GetPerformanceCounter() - ticks_start) * 1000.0 / SDL_GetPerformanceFrequency();
+            if(ms > 12) {
+                const double f = 1000.0 / SDL_GetPerformanceFrequency();
+                log_info("stats: ticks took %.1f ms (%d dynamic %.1f ms, %d static %.1f ms, palette %.1f ms, %d delayed, "
+                         "dyntick %d ms)",
+                         ms, n_dynamic, t_dynamic * f, n_static, t_static * f, t_palette * f, n_delay,
+                         game_state_ms_per_dyntick(gs));
+            }
+        }
+#endif
 
         // Do the actual video rendering jobs
         if(enable_screen_updates) {

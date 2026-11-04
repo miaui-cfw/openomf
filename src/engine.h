@@ -17,6 +17,10 @@ typedef struct engine_init_flags {
     int speed;
 } engine_init_flags;
 
+#ifdef RG35XX
+extern bool engine_vblank_lock; // --lock
+#endif
+
 int engine_init(const engine_init_flags *init_flags); // Init window, audiodevice, etc.
 void engine_run(const engine_init_flags *init_flags); // Run game
 void engine_close(void);                              // Kill window, audiodev

@@ -71,6 +71,14 @@ static bool find_writeable_path(path *dst, const char *own_env_name, const char 
     if(env_str(&tmp, own_env_name)) {
         goto ok;
     }
+#ifdef RG35XX
+    // the pak's own saves/ directory, next to the executable
+    if(base_path(&tmp)) {
+        path_from_parts(dst, str_c(&tmp), "saves");
+        str_free(&tmp);
+        return true;
+    }
+#endif
     if(env_str(&tmp, xdg_env_name)) {
         goto ok;
     }

@@ -14,7 +14,9 @@ typedef struct {
     component *freq_selector;
 } audio_menu_data;
 
+#ifndef RG35XX
 static const char *mono_opts[] = {"OFF", "ON"};
+#endif
 
 const char *music_type_names[] = {"ORIGINALS", "REMIXES", "BOTH"};
 
@@ -109,8 +111,10 @@ component *menu_audio_create(scene *s) {
     menu_attach(menu,
                 textslider_create_bind("MUSIC", "Raise or lower the volume of music. Press right or left to change.",
                                        10, 1, menu_audio_music_slide, NULL, &settings_get()->sound.music_vol));
+#ifndef RG35XX // the device plays mono at twice the rate: always stereo
     menu_attach(
         menu, textselector_create_bind_opts("MONO", NULL, NULL, NULL, &settings_get()->sound.music_mono, mono_opts, 2));
+#endif
     local->freq_selector = textselector_create("FREQUENCY:", NULL, menu_audio_freq_toggled, local);
     menu_audio_reset_freqs(local, 1);
     menu_attach(menu, local->freq_selector);
