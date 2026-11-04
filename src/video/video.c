@@ -12,6 +12,9 @@
 #ifdef ENABLE_NULL_RENDERER
 #include "video/renderers/null/null_renderer.h"
 #endif
+#ifdef ENABLE_RG35XX_RENDERER
+#include "video/renderers/rg35xx/rg35xx_renderer.h"
+#endif
 
 #define MAX_AVAILABLE_RENDERERS 8 ///< Maximum number of renderers that can be registered
 
@@ -25,6 +28,9 @@ typedef void (*renderer_init)(renderer *renderer);
  * List of all built-in renderers. Most preferred renderers at the top.
  */
 static renderer_init all_renderers[] = {
+#ifdef ENABLE_RG35XX_RENDERER
+    rg35xx_renderer_set_callbacks,
+#endif
 #ifdef ENABLE_OPENGL3_RENDERER
     gl3_renderer_set_callbacks,
 #endif
