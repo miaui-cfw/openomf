@@ -22,6 +22,11 @@ typedef void (*menu_submenu_done_cb)(component *menu, component *submenu); ///< 
  */
 component *menu_create(void);
 
+#ifdef RG35XX
+/** ESC (B) only moves the selection to the last item, never activates it. */
+void menu_set_esc_only_selects(component *menu, bool only_selects);
+#endif
+
 /**
  * @brief Attach a component to the menu
  * @param menu Menu to attach to

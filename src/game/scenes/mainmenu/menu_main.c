@@ -131,5 +131,8 @@ component *menu_main_create(scene *s) {
     menu_attach(menu, button_create("DEMO", NULL, false, false, mainmenu_demo, s));
     menu_attach(menu, button_create("SCOREBOARD", NULL, false, false, mainmenu_soreboard, s));
     menu_attach(menu, button_create("QUIT", NULL, false, false, mainmenu_quit, s));
+#ifdef RG35XX
+    menu_set_esc_only_selects(menu, true); // B goes to QUIT; quitting takes A
+#endif
     return menu;
 }

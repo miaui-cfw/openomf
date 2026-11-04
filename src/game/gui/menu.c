@@ -22,6 +22,9 @@ typedef struct menu {
     bool background;   ///< Whether to draw background
     bool centered;     ///< Whether items are centered
     bool is_submenu;   ///< Whether this menu is a submenu
+#ifdef RG35XX
+    bool esc_only_selects; ///< ESC (B) only moves to the last item, never activates it (the main menu's QUIT)
+#endif
 
     int help_x;                             ///< Help area X coordinate
     int help_y;                             ///< Help area Y coordinate
@@ -40,6 +43,13 @@ typedef struct menu {
     menu_free_cb free; ///< Free callback
     menu_tick_cb tick; ///< Tick callback
 } menu;
+
+#ifdef RG35XX
+void menu_set_esc_only_selects(component *c, bool only_selects) {
+    menu *m = component_get_obj(c);
+    m->esc_only_selects = only_selects;
+}
+#endif
 
 void menu_select(component *c, component *sc) {
     menu *m = component_get_obj(c);
@@ -185,6 +195,11 @@ static bool menu_action(component *mc, int action, int source) {
         c = component_get_child(mc, component_child_count(mc) - 1);
         menu_select(mc, c);
 
+#ifdef RG35XX
+        if(m->esc_only_selects) {
+            return true; // leaving takes A on the last item: a stray B never quits
+        }
+#endif
         if(m->is_submenu || was_last_selected) {
             // If the last item is already selected, and ESC if punched, change the action to punch
             // This is then passed to the quit (last) component and its callback is called

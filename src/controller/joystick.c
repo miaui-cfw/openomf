@@ -2,6 +2,11 @@
 #include "utils/allocator.h"
 #include "utils/log.h"
 #include <stdlib.h>
+#ifdef RG35XX
+#include "game/game_state.h"
+#include "resources/ids.h"
+#include "video/renderers/rg35xx/rg35xx_renderer.h"
+#endif
 
 #define UP -32768
 #define DOWN 32767
@@ -79,6 +84,47 @@ int joystick_name_to_id(const char *name, int offset) {
     return -1;
 }
 
+#ifdef RG35XX
+/*
+ * The RG35XX: A and X punch, B and Y kick; START and MENU are the escape (the pause menu in a fight). B is also
+ * the way back: everywhere but in a fight (an arena, not paused by its menu, not a demo), B is the escape and not a
+ * kick, for the menus and for screens that read the players' pads (the melee selection), so a B never both kicks
+ * (selects) and goes back.
+ */
+static bool b_is_back(const controller *ctrl) {
+    game_state *gs = ctrl->gs;
+    return gs == NULL || !is_arena(gs->this_id) || game_state_is_paused(gs) || is_demoplay(gs);
+}
+
+static bool pressed(const joystick *k, int button) {
+    return button != SDL_CONTROLLER_BUTTON_INVALID && SDL_GameControllerGetButton(k->joy, button);
+}
+
+/*
+ * An attack button: in a menu it counts (and is remembered as held); in a fight a button still held from a menu
+ * counts only after it is released, so the A or B that closes the pause menu does not also punch or kick. Kept per
+ * pad (its instance), not per controller: while the game is paused only the menu controller polls the pad.
+ */
+static unsigned held_from_menu[8];
+
+static bool attack_button(const joystick *k, int button, bool menu) {
+    if(button == SDL_CONTROLLER_BUTTON_INVALID) {
+        return false;
+    }
+    unsigned *held = &held_from_menu[SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(k->joy)) & 7];
+    const unsigned bit = 1u << button;
+    if(!SDL_GameControllerGetButton(k->joy, button)) {
+        *held &= ~bit;
+        return false;
+    }
+    if(menu) {
+        *held |= bit;
+        return true;
+    }
+    return !(*held & bit);
+}
+#endif
+
 static int internal_joystick_poll(joystick *k, controller *ctrl, ctrl_event **ev, bool allow_esc) {
     if(!SDL_GameControllerGetAttached(k->joy)) {
         controller_close(ctrl, ev);
@@ -133,6 +179,35 @@ static int internal_joystick_poll(joystick *k, controller *ctrl, ctrl_event **ev
     }
 
     // button input
+#ifdef RG35XX
+    const bool back = b_is_back(ctrl);
+    const bool a = attack_button(k, k->keys->punch, back), x = attack_button(k, k->keys->punch2, back);
+    const bool b = attack_button(k, k->keys->kick, back), y = attack_button(k, k->keys->kick2, back);
+    if(a || x) {
+        action |= ACT_PUNCH;
+    } else if((!back && b) || y) {
+        action |= ACT_KICK;
+    }
+
+    // --stats: a player's attacks as they change (what a fight receives)
+    if(rg35xx_renderer_stats && !allow_esc) {
+        static int last_attack = -1;
+        const int attack = action & (ACT_PUNCH | ACT_KICK);
+        if(attack != last_attack) {
+            log_info("input: %s%s%s", attack & ACT_PUNCH ? "punch" : "", attack & ACT_KICK ? "kick" : "",
+                     attack ? (back ? " (menu context)" : " (fight)") : "none");
+            last_attack = attack;
+        }
+    }
+
+    if(action) {
+        joystick_cmd(ctrl, action, ev);
+    }
+
+    if(allow_esc && (pressed(k, k->keys->escape) || pressed(k, k->keys->escape2) || (back && b))) {
+        joystick_cmd(ctrl, ACT_ESC, ev);
+    }
+#else
     if(SDL_GameControllerGetButton(k->joy, k->keys->punch)) {
         action |= ACT_PUNCH;
     } else if(SDL_GameControllerGetButton(k->joy, k->keys->kick)) {
@@ -146,6 +221,7 @@ static int internal_joystick_poll(joystick *k, controller *ctrl, ctrl_event **ev
     if(allow_esc && SDL_GameControllerGetButton(k->joy, k->keys->escape)) {
         joystick_cmd(ctrl, ACT_ESC, ev);
     }
+#endif
 
     if(ctrl->current == 0) {
         joystick_cmd(ctrl, ACT_STOP, ev);
@@ -181,6 +257,11 @@ static inline void internal_joystick_default_keys(joystick_keys *keys) {
     keys->punch = SDL_CONTROLLER_BUTTON_A;
     keys->kick = SDL_CONTROLLER_BUTTON_B;
     keys->escape = SDL_CONTROLLER_BUTTON_START;
+#ifdef RG35XX
+    keys->punch2 = SDL_CONTROLLER_BUTTON_X;
+    keys->kick2 = SDL_CONTROLLER_BUTTON_Y;
+    keys->escape2 = SDL_CONTROLLER_BUTTON_GUIDE;
+#endif
 }
 
 int joystick_create(controller *ctrl, int joystick_id) {

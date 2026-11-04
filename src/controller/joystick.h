@@ -11,6 +11,11 @@ typedef struct {
     int punch;
     int kick;
     int escape;
+#ifdef RG35XX
+    int punch2;  // X
+    int kick2;   // Y
+    int escape2; // MENU
+#endif
 } joystick_keys;
 
 typedef struct {
