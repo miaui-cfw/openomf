@@ -28,3 +28,5 @@ test.bk
 test.trn
 test.rec
 /rg35xx/build/
+/rg35xx/probe/
+/rg35xx/testkit/
